@@ -20,20 +20,21 @@ sokol_gamepad.h -- cross-platform gamepad API
     - guide and back buttons
     - two analog shoulder buttons
     - two analog triggers
-    This is the most popular and comprehensive configutration across game systems
+    This is the most popular and comprehensive configuration across game systems
     (PS1/PS2/PS3/PS4/Xbox/Xbox360/Xbox One/Switch map directly, just for start)
 
     To use:  
-    - In you app initialization code call sgamepad_init()
+    - In your app initialization code call sgamepad_init()
     - At the exact time you want to record input state call sgamepad_record_state()
     - Get the state for a particular gamepad like this:
         sgamepad_gamepad_state state;
-        sgamepad_get_gamepad_state(0, &state);
+        int read = sgamepad_get_gamepad_state(0, &state);
+      If read equals the first argument, the gamepad was successfully read.
     
     sgamepad_gamepad_state's members are set to the contoller's state as recorded previously.
 
-    Analog stick states are pre-processed to take dead zones into account: in most cases you should rely on
-    direction_x/direction_y/magnitude for input processing.
+    Analog stick states are pre-processed to take dead zones into account: in 
+    most cases you should rely on direction_x/direction_y/magnitude for input processing.
 */
 
 #define SOKOL_GAMEPAD_INCLUDED (1)
@@ -86,23 +87,27 @@ extern "C" {
         float right_shoulder;
         float left_trigger;
         float right_trigger;
+        bool connected;
     } sgamepad_gamepad_state;
 
     SOKOL_API_DECL unsigned int sgamepad_get_max_supported_gamepads();
+
+    SOKOL_API_DECL bool sgamepad_is_connected(unsigned int index);
 
     SOKOL_API_DECL void sgamepad_init();
 
     SOKOL_API_DECL void sgamepad_record_state();
 
-    SOKOL_API_DECL void sgamepad_get_gamepad_state(unsigned int index, sgamepad_gamepad_state* pstate);
+    SOKOL_API_DECL unsigned int sgamepad_get_gamepad_state(unsigned int index, sgamepad_gamepad_state* pstate);
 
 #ifdef __cplusplus
 } /* extern "C" */
 
-/* reference-based equivalents for c++ */
-
 #endif
 #endif // SOKOL_GAMEPAD_INCLUDED
+
+//------------------------------------------------------------------------------
+// Implementation follows
 
 #ifdef SOKOL_IMPL
 #define SOKOL_GAMEPAD_IMPL_INCLUDED (1)
@@ -172,17 +177,26 @@ _SOKOL_PRIVATE float _sgamepad_normalize_analog_trigger(float value, float max_v
     return output;
 }
 
+inline float float_min(float a, float b)
+{
+    return a < b ? a : b;
+}
+inline float float_max(float a, float b)
+{
+    return a > b ? a : b;
+}
+
 _SOKOL_PRIVATE void _sgamepad_generate_analog_stick_state(float x_value, float y_value, float max_magnitude, float dead_zone_magnitude, sgamepad_analog_stick_state* pstate) {
     float magnitude = 0.0f;
     if (max_magnitude != 1.0f) {
-        pstate->normalized_x = fmax(fmin(x_value/max_magnitude, 1.0f), -1.0f);
-        pstate->normalized_y = fmax(fmin(y_value/max_magnitude, 1.0f), -1.0f);
+        pstate->normalized_x = float_max(float_min(x_value/max_magnitude, 1.0f), -1.0f);
+        pstate->normalized_y = float_max(float_min(y_value/max_magnitude, 1.0f), -1.0f);
         magnitude = sqrtf(x_value * x_value + y_value * y_value);
     }
     else {
         pstate->normalized_x = x_value;
         pstate->normalized_y = y_value;
-        magnitude = fmin(sqrtf(x_value * x_value + y_value * y_value), 1.0f);
+        magnitude = float_min(sqrtf(x_value * x_value + y_value * y_value), 1.0f);
     }
         
     if (magnitude <= dead_zone_magnitude) {
@@ -194,7 +208,7 @@ _SOKOL_PRIVATE void _sgamepad_generate_analog_stick_state(float x_value, float y
 
     pstate->direction_x = x_value / magnitude;
     pstate->direction_y = y_value / magnitude;
-    magnitude = fmin(magnitude, max_magnitude);
+    magnitude = float_min(magnitude, max_magnitude);
     pstate->magnitude = (magnitude - dead_zone_magnitude) / (max_magnitude - dead_zone_magnitude);
 }
 
@@ -212,10 +226,8 @@ _SOKOL_PRIVATE void _sgamepad_generate_analog_stick_state(float x_value, float y
 #elif defined(__APPLE__)
     #define SGAMEPAD_MAX_SUPPORTED_GAMEPADS 4
 
-    #if !defined(__cplusplus)
-        #if __has_feature(objc_arc) && !__has_feature(objc_arc_fields)
-            #error "sokol_app.h requires __has_feature(objc_arc_field) if ARC is enabled (use a more recent compiler version)"
-        #endif
+    #if __has_feature(objc_arc) && !__has_feature(objc_arc_fields)
+        #error "sokol_app.h requires __has_feature(objc_arc_field) if ARC is enabled (use a more recent compiler version)"
     #endif
     #include <GameController/GameController.h>
 
@@ -228,7 +240,6 @@ _SOKOL_PRIVATE void _sgamepad_generate_analog_stick_state(float x_value, float y
     means no way to distinguish between devices generating events */
 #else
     #define SGAMEPAD_MAX_SUPPORTED_GAMEPADS 0
-
 #endif
 
 typedef struct sgamepad {
@@ -252,8 +263,10 @@ _SOKOL_PRIVATE void _sgamepad_record_state() {
         XINPUT_STATE xinput_state;
         if (XInputGetState(i, &xinput_state) != ERROR_SUCCESS)
         {
+            target->connected = false;
             continue;
         }
+        target->connected = true;
 
         WORD xinput_digital_buttons = xinput_state.Gamepad.wButtons;
 
@@ -300,12 +313,14 @@ _SOKOL_PRIVATE void _sgamepad_record_state() {
 _SOKOL_PRIVATE void _sgamepad_record_state() {
     int target_index = 0;
     for (GCController* controller in GCController.controllers) {
+        sgamepad_gamepad_state* target = _sgamepad.gamepad_states + target_index;
         GCExtendedGamepad* extended_gamepad = controller.extendedGamepad;
         if (extended_gamepad == nil) {
+            target->connected = false;
             continue;
         }
+        target->connected = true;
         
-        sgamepad_gamepad_state* target = _sgamepad.gamepad_states + target_index;
         target_index++;
         
         uint16_t new_flags = 0;
@@ -348,6 +363,11 @@ _SOKOL_PRIVATE void _sgamepad_record_state() {
         target->right_shoulder = extended_gamepad.rightShoulder.value;
         target->left_trigger = extended_gamepad.leftTrigger.value;
         target->right_trigger = extended_gamepad.rightTrigger.value;
+    }
+
+    ++target_index;
+    for ( ; target_index < SGAMEPAD_MAX_SUPPORTED_GAMEPADS; ++target_index) {
+        target_index->connected = false;
     }
 }
 
@@ -446,6 +466,7 @@ _SOKOL_PRIVATE bool _sgamepad_android_key_handler(const AInputEvent* event) {
     }
 
     sgamepad_gamepad_state* target = _sgamepad.transient_gamepad_states + player_id;
+    target->connected = true;
 
     uint32_t key_code = AKeyEvent_getKeyCode(event);
     uint32_t key_action = AKeyEvent_getAction(event);
@@ -582,10 +603,20 @@ SOKOL_API_IMPL void sgamepad_record_state() {
     _sgamepad_record_state();
 }
 
-SOKOL_API_IMPL void sgamepad_get_gamepad_state(unsigned int index, sgamepad_gamepad_state* pstate) {
+SOKOL_API_IMPL unsigned int sgamepad_get_gamepad_state(unsigned int index, sgamepad_gamepad_state* pstate) {
     if (index < SGAMEPAD_MAX_SUPPORTED_GAMEPADS) {
         *pstate = _sgamepad.gamepad_states[index];
+        return index;
     }
+    return SGAMEPAD_MAX_SUPPORTED_GAMEPADS;
 }
+
+SOKOL_API_DECL bool sgamepad_is_connected(unsigned int index) {
+    if (index >= SGAMEPAD_MAX_SUPPORTED_GAMEPADS)
+        return false;
+
+    return _sgamepad.gamepad_states[index].connected;
+}
+
 
 #endif /* SOKOL_IMPL */
